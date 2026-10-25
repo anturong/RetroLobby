@@ -290,6 +290,17 @@ UI 启动/游戏退出后通过 `xdotool windowactivate --sync` 抢回焦点；
 - `lobby-update --check` / `--force` 走本地 HTTP 包验证通过：下载、原子替换、
   保留 `nick`/`lobby_ip`、UI 与守护用新 PID 重启，页脚版本号正确。
 
+## 已验收（2026-10-25 合并更新）
+
+- 发布 `v2026.10.25.2`，Release 同时包含 `lobby-ui.tar.gz`、`easytier-netplay.tar.gz`、
+  `easytier.version` 三个资产。
+- 两台 VM 从 2026.10.25.1 执行 `lobby-update`：大厅升到 .2，UI/守护以新 PID 重启，
+  页脚显示 `v2026.10.25.2`。
+- 新版脚本 `lobby-update --check` 一次输出两项：大厅已最新、组网已最新（2.6.4）。
+- `lobby-update --force` 完整走通组网更新：下载包 → 停服务 → 替换 `easytier-core`/`easytier-cli`
+  （旧文件保留 `.bak`）→ 重启服务并恢复到 `tun0 10.144.144.3`；
+  `/userdata/system/services/easytier` 校验和前后一致，本机节点配置未被覆盖。
+
 ## 已知限制
 
 - 中途加入不会同步状态：客户端必须在主机开局前后进入（RetroArch replay 机制）。
