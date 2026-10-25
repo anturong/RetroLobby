@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<gameList>
+  <game>
+    <path>./联机大厅.lobby</path>
+    <name>联机大厅</name>
+    <desc>RetroArch 联机房间浏览 · 实时测速 · 一键进入</desc>
+    <image>./images/联机大厅-image.jpg</image>
+    <developer>自建大厅</developer>
+    <publisher>10.144.144.3</publisher>
+    <genre>Netplay</genre>
+  </game>
+</gameList>

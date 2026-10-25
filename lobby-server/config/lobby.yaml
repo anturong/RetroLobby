@@ -1,0 +1,10 @@
+server:
+  address: 0.0.0.0:80
+  geolite2path: ./geoip2/GeoLite2-Country.mmdb
+  templatepath: ./web/templates
+database:
+  type: sqlite
+  connection: ":memory:"
+blacklist:
+  nickname: []
+  ips: []

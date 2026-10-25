@@ -1,0 +1,26 @@
+#!/bin/bash
+# EasyTier mesh VPN; binaries/state/log live on /userdata (root is a tmpfs overlay).
+# 每台机器只改 NODE_IP / HOSTNAME；network-name 与 network-secret 必须全网一致。
+[ "$1" = "start" ] || [ "$1" = "stop" ] || exit 0
+
+DIR=/userdata/system/easytier
+LOG=/userdata/system/logs/easytier.log
+NODE_IP=10.144.144.2
+HOSTNAME=bato-n305
+
+if [ "$1" = "stop" ]; then
+  pkill -x easytier-core
+  exit 0
+fi
+
+[ -x $DIR/easytier-core ] || exit 0
+pgrep -x easytier-core >/dev/null && exit 0
+
+mkdir -p /userdata/system/logs
+setsid $DIR/easytier-core -i $NODE_IP \
+  --hostname $HOSTNAME \
+  --network-name Batocera43.1 \
+  --network-secret RetroArch \
+  -p tcp://easytier-us.slarker.me:11010 \
+  -p tcp://web.sitmc.club:11010 >>$LOG 2>&1 </dev/null &
+exit 0

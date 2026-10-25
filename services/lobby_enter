@@ -1,0 +1,12 @@
+#!/bin/bash
+export DISPLAY=:0
+export HOME=/userdata/system
+
+if [ "$1" = "stop" ]; then
+    pkill -f 'lobby_watch\.py'
+    exit 0
+fi
+[ "$1" = "start" ] || exit 0
+
+pgrep -f 'lobby_watch\.py' >/dev/null && exit 0
+exec /usr/bin/python3 /userdata/system/lobby-ui/lobby_watch.py >>/userdata/system/logs/lobby_watch.log 2>&1

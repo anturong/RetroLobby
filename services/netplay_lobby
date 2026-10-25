@@ -1,0 +1,22 @@
+#!/bin/bash
+# Self-hosted RetroArch netplay lobby + hosts redirect to the EasyTier lobby host.
+[ "$1" = "start" ] || [ "$1" = "stop" ] || exit 0
+
+DIR=/userdata/system/netplay-lobby
+LOG=/userdata/system/logs/netplay-lobby.log
+LOBBY_IP=10.144.144.3
+
+if [ "$1" = "stop" ]; then
+  pkill -f netplay-lobby-server-go
+  exit 0
+fi
+
+[ -x $DIR/netplay-lobby-server-go ] || exit 0
+
+grep -q 'lobby.libretro.com' /etc/hosts || echo "$LOBBY_IP lobby.libretro.com" >> /etc/hosts
+
+pgrep -f netplay-lobby-server-go >/dev/null && exit 0
+
+mkdir -p /userdata/system/logs
+cd $DIR && setsid ./netplay-lobby-server-go -v >>$LOG 2>&1 </dev/null &
+exit 0

@@ -1,0 +1,24 @@
+#!/bin/bash
+export DISPLAY=:0
+export HOME=/userdata/system
+
+if [ "$1" = "stop" ]; then
+    pkill -f 'lobby_ui\.py'
+    exit 0
+fi
+[ "$1" = "start" ] || exit 0
+
+# /etc/hosts 在 tmpfs 上：每次开机恢复大厅重定向（客户端也需要）
+LOBBY_IP=$(cat /userdata/system/lobby-ui/lobby_ip 2>/dev/null)
+if [ -n "$LOBBY_IP" ]; then
+    sed -i '/lobby\.libretro\.com/d' /etc/hosts
+    echo "$LOBBY_IP lobby.libretro.com" >> /etc/hosts
+fi
+
+for _ in $(seq 1 240); do
+    xdotool search --class emulationstation >/dev/null 2>&1 && break
+    sleep 0.5
+done
+sleep 2
+
+exec /usr/bin/python3 /userdata/system/lobby-ui/lobby_ui.py >>/userdata/system/logs/lobby_ui.log 2>&1

@@ -1,0 +1,21 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build lobby-ui.tar.gz
+        run: python3 tools/make_release.py
+      - name: Publish release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/lobby-ui.tar.gz
