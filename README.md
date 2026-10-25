@@ -6,6 +6,18 @@
 对局仍是 RetroArch 原生 netplay（TCP 55435），大厅只负责房间公告/浏览；
 大厅挂了不影响直连。
 
+> **安全必读：部署前必须修改 Batocera 的默认 root 密码。**
+> Batocera 43.1 出厂 root 密码固定为 `linux` 且 SSH 默认开启。本项目用 root SSH 部署，
+> EasyTier 虚拟网内任何设备、以及同局域网的任何机器，都能用这个公开的默认密码直接拿到 root，
+> 进而改动系统、替换文件或操纵联机大厅。不改密码等于把两台机器和整个联机网络的控制权公开。
+
+```bash
+ssh root@<主机>
+passwd                    # 设置强密码
+```
+
+改完后 `deploy.py` 用 `--password <新密码>`（或改用 SSH 密钥）部署，不要继续使用默认值。
+
 ## 交付内容
 
 | 路径 | 作用 | 部署位置 |
@@ -29,7 +41,8 @@
 
 ## 从零复现
 
-需要两台同版本 Batocera 43.1（x86_64），root SSH 可登录（默认密码 `linux`）。
+需要两台同版本 Batocera 43.1（x86_64），root SSH 可登录。
+**先按开头“安全必读”修改默认密码**（出厂为 `linux`），再用 `deploy.py --password` 部署。
 `pygame`、`xdotool`、中文字体、`ffmpeg` 都是 Batocera 43.1 自带，无需安装；
 Windows 侧只需要 Python 3 + paramiko。
 
