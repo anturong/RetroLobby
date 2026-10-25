@@ -15,7 +15,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build lobby-ui.tar.gz
         run: python3 tools/make_release.py
-      - name: Publish release asset
+      - name: Download EasyTier binaries
+        run: |
+          ver=$(tr -d ' \r\n' < networking/VERSION)
+          curl -fsSL -o /tmp/easytier.zip \
+            "https://github.com/EasyTier/EasyTier/releases/download/v${ver}/easytier-linux-x86_64-v${ver}.zip"
+          unzip -q /tmp/easytier.zip -d /tmp/easytier
+      - name: Build easytier-netplay.tar.gz
+        run: python3 tools/make_networking.py /tmp/easytier/easytier-linux-x86_64
+      - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/lobby-ui.tar.gz
+          files: |
+            dist/lobby-ui.tar.gz
+            dist/easytier-netplay.tar.gz
+            dist/easytier.version

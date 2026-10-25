@@ -24,7 +24,7 @@ passwd                    # 设置强密码
 |---|---|---|
 | `src/lobby_ui.py` | pygame 全屏大厅 UI：建立主机 / 联机进入 两个菜单 | `/userdata/system/lobby-ui/lobby_ui.py` |
 | `src/lobby_watch.py` | 屏幕守护：ES 一进入“联机大厅”游戏列表就自动拉起 UI（免去中间这级） | `/userdata/system/lobby-ui/lobby_watch.py` |
-| `src/update.py` | `lobby-update`：从 GitHub 拉取最新版并重启 UI | `/userdata/system/lobby-ui/update.py` → `/usr/bin/lobby-update` |
+| `src/update.py` | `lobby-update`：从 GitHub 同时更新大厅与 EasyTier 组网 | `/userdata/system/lobby-ui/update.py` → `/usr/bin/lobby-update` |
 | `VERSION` | 当前版本号（UI 页脚与更新比对） | `/userdata/system/lobby-ui/VERSION` |
 | `src/boot-custom.sh` | 开机把 tmpfs 上会丢的 logo 复制回主题目录 | `/boot/boot-custom.sh`（FAT，需 remount rw） |
 | `es/es_systems_lobby.cfg` | ES 自定义系统 `lobby`（首页磁贴入口） | `/userdata/system/configs/emulationstation/` |
@@ -33,8 +33,10 @@ passwd                    # 设置强密码
 | `services/lobby_home` | 开机等 ES 起来后在顶层拉起 lobby UI | `/userdata/system/services/lobby_home` |
 | `services/lobby_enter` | 常驻屏幕守护 `lobby_watch.py`（磁贴入口直达 UI） | `/userdata/system/services/lobby_enter` |
 | `services/netplay_lobby` | 大厅服务器 + `/etc/hosts` 劫持 `lobby.libretro.com` | 大厅机 `/userdata/system/services/netplay_lobby` |
+| `networking/` | EasyTier 组网安装脚本 + 服务模板 + 版本号（`install.sh`、`uninstall.sh`、`VERSION`） | 任意一台 Batocera |
 | `services/easytier.example` | EasyTier 服务模板（换 `NODE_IP/HOSTNAME`） | `/userdata/system/services/easytier` |
 | `tools/make_logo.py` | 生成 "联机大厅" 透明 logo | 一次性 |
+| `tools/make_networking.py` | 用官方 EasyTier 二进制打包 `easytier-netplay.tar.gz` | 发布时 |
 | `tools/uinput_keys.py` | 无手柄/远程注入按键（验证用） | 一次性 |
 | `lobby-server/` | `netplay-lobby-server-go` 二进制 + `lobby.yaml` + 页面模板 + GeoIP | 大厅机 `/userdata/system/netplay-lobby/` |
 | `deploy.py` | 一键部署到一台 Batocera（SSH/SFTP/paramiko） | Windows 侧 |
@@ -48,16 +50,19 @@ Windows 侧只需要 Python 3 + paramiko。
 
 ### 1. 组网（每台都做）
 
-本项目参考值：大厅机 n305 = `10.144.144.3`，对局机 = `10.144.144.2`。两种装法任选：
+本项目参考值：大厅机 n305 = `10.144.144.3`，对局机 = `10.144.144.2`。
+组网包随 GitHub Release 一起发布（`easytier-netplay.tar.gz`，含官方 `easytier-core`/`easytier-cli`）：
 
-- 把同目录 `../batocera-easytier-netplay/batocera-easytier-netplay.tar.gz` 传到
-  `/userdata`，解压后 `bash install.sh`（自带 `easytier-core` + GUI，DHCP 分配 IP）；
-- 或自备 `easytier-core`（`easytier-linux-x86_64-v2.6.4.zip`），按 `services/easytier.example`
-  建服务，把 `NODE_IP`、`HOSTNAME` 改成这台机器的值。
+```bash
+cd /userdata
+curl -L -o easytier-netplay.tar.gz \
+  https://github.com/anturong/RetroLobby/releases/latest/download/easytier-netplay.tar.gz
+tar -xzf easytier-netplay.tar.gz && cd easytier-netplay && bash install.sh
+```
 
+也可以在仓库内用 `networking/install.sh` 配自备二进制；服务模板见 `services/easytier.example`。
 两台必须使用相同的 `--network-name Batocera43.1` 和 `--network-secret RetroArch`。
-EasyTier 包 README 里的“房主地址 10.144.144.2”只针对它自带的 RetroArch 说明；
-大厅部署以本 README 与 `deploy.py` 的参数为准（`--lobby-ip` 指向大厅机）。
+大厅机地址以 `deploy.py --lobby-ip` 与 `/userdata/system/lobby-ui/lobby_ip` 为准。
 验证：`ip -4 addr show tun0` 有 `10.144.144.x`，`easytier-cli peer` 能看到对端。
 
 ### 2. 部署（Windows 侧，在本目录执行）
@@ -68,12 +73,12 @@ pip install paramiko -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 大厅机：10.144.144.3，同时安装并启用大厅服务器
 python deploy.py --host 192.168.232.129 --nick bato-n305 \
                  --node-ip 10.144.144.3 --lobby-ip 10.144.144.3 --lobby-server \
-                 --update-repo <github-owner>/<repo>
+                 --update-repo anturong/RetroLobby
 
 # 对局机：10.144.144.2
 python deploy.py --host 192.168.232.130 --nick bato-n305-2 \
                  --node-ip 10.144.144.2 --lobby-ip 10.144.144.3 \
-                 --update-repo <github-owner>/<repo>
+                 --update-repo anturong/RetroLobby
 ```
 
 两台重启：`ssh root@<host> reboot`。
@@ -124,22 +129,35 @@ LOBBY_WATCH_DEBUG=1 python3 /userdata/system/lobby-ui/lobby_watch.py  # 手动�
 
 ## 自动更新（GitHub）
 
-发布仓库里放 `VERSION`、`src/`、`services/`、`es/`、`tools/` 即可；`lobby-update`
-优先下载最新 Release 的 `lobby-ui.tar.gz`（由 `.github/workflows/release.yml` 在打 tag 时生成），
-没有 Release 时回退到分支源码包（默认 `main`），并自动走 `ghfast.top` / `gh-proxy.com` 镜像。
+Release 由 `.github/workflows/release.yml` 在打 tag 时生成，包含三个资产：
+
+- `lobby-ui.tar.gz`：大厅 UI、服务、磁贴；
+- `easytier-netplay.tar.gz`：EasyTier 组网（官方 core/cli + 安装脚本）；
+- `easytier.version`：组网版本号。
 
 ```bash
-lobby-update --check     # 只检查版本
-lobby-update             # 安装最新版并重启大厅 UI
-lobby-update --force     # 版本相同也重装
-lobby-update --asset-url http://主机/lobby-ui.tar.gz   # 直接用指定包，无需配置仓库
+lobby-update --check          # 同时检查大厅与组网
+lobby-update                  # 安装最新版并重启大厅 UI / 组网服务
+lobby-update --force          # 版本相同也重装（大厅与组网）
+lobby-update --no-networking  # 只更新大厅，跳过组网
+lobby-update --asset-url http://主机/lobby-ui.tar.gz   # 指定包，无需配置仓库
 ```
+
+组网更新规则：
+
+- 只有已安装组网（存在 `/userdata/system/services/easytier` 与 `easytier-core`）才参与，
+  未安装的机器自动跳过；
+- 先比较 `easytier.version`，版本相同不下载；
+- 版本不同时先下载完整包，再停服务、替换 `easytier-core`/`easytier-cli`（旧文件保留 `.bak`），
+  最后重启服务并等待 `tun0`；**服务配置（本机 IP、节点名、网络名/密钥）不改动**；
+- 组网下载或替换失败只记录警告，不影响大厅更新。
 
 仓库地址写在 `/userdata/system/lobby-ui/update_repo`（内容 `owner/repo`），
 或部署时传 `--update-repo owner/repo`，也可临时 `lobby-update --repo owner/repo`。
-给了 `--asset-url` 时不再要求 `update_repo`，可用于内网/本地包验证。
-更新只覆盖 UI/服务/磁贴文件，保留 `nick`、`lobby_ip`、`update_repo` 与大厅服务器配置；
+给了 `--asset-url` 时不再要求 `update_repo`，组网资产从同一目录取，可用于内网验证。
+大厅更新只覆盖 UI/服务/磁贴文件，保留 `nick`、`lobby_ip`、`update_repo` 与大厅服务器配置；
 安装后直接重启 `lobby_watch.py` / `lobby_ui.py`（不走 `batocera-services`，它在部分机器上会卡住）。
+所有下载都会自动尝试 `ghfast.top` / `gh-proxy.com` 镜像。
 
 ## 关键实现点（踩过的坑）
 

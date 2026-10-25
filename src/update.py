@@ -13,11 +13,13 @@
 import argparse
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 
 BASE = "/userdata/system/lobby-ui"
@@ -28,6 +30,13 @@ REPO_FILE = os.path.join(BASE, "update_repo")
 VERSION_FILE = os.path.join(BASE, "VERSION")
 ASSET_NAME = "lobby-ui.tar.gz"
 MIRRORS = ("https://ghfast.top/%s", "https://gh-proxy.com/%s")
+EASYTIER_DIR = "/userdata/system/easytier"
+EASYTIER_CORE = os.path.join(EASYTIER_DIR, "easytier-core")
+EASYTIER_CLI = os.path.join(EASYTIER_DIR, "easytier-cli")
+EASYTIER_VERSION = os.path.join(EASYTIER_DIR, "VERSION")
+EASYTIER_SERVICE = os.path.join(SERVICES, "easytier")
+NET_ASSET_NAME = "easytier-netplay.tar.gz"
+NET_VERSION_NAME = "easytier.version"
 
 
 def log(msg):
@@ -109,6 +118,157 @@ def install_file(src, dst, mode=0o644):
     os.replace(tmp, dst)
 
 
+def fetch_text(url, timeout=20):
+    errors = []
+    for candidate in [url] + [m % url for m in MIRRORS]:
+        try:
+            return fetch(candidate, timeout).decode("utf-8", "replace").strip()
+        except Exception as exc:
+            errors.append("%s: %s" % (candidate, exc))
+    raise RuntimeError("获取版本失败：\n" + "\n".join(errors))
+
+
+def normalize_version(text):
+    match = re.search(r"(\d+\.\d+\.\d+)", text or "")
+    return match.group(1) if match else ""
+
+
+def networking_installed():
+    return os.path.isfile(EASYTIER_SERVICE) and os.path.isfile(EASYTIER_CORE)
+
+
+def local_net_version():
+    version = read_version(EASYTIER_DIR)
+    if not version:
+        try:
+            proc = subprocess.run([EASYTIER_CORE, "--version"],
+                                  capture_output=True, timeout=10)
+            version = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+        except Exception:
+            return ""
+    return normalize_version(version)
+
+
+def net_urls(repo, asset_url):
+    if asset_url:
+        base = asset_url.rstrip("/").rsplit("/", 1)[0]
+        return base + "/" + NET_VERSION_NAME, base + "/" + NET_ASSET_NAME
+    base = "https://github.com/%s/releases/latest/download/" % repo
+    return base + NET_VERSION_NAME, base + NET_ASSET_NAME
+
+
+def extract_net_payload(data):
+    tmp = tempfile.mkdtemp(prefix="easytier-update-")
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tar:
+        for member in tar.getmembers():
+            name = member.name.replace("\\", "/")
+            if name.startswith("/") or ".." in name.split("/"):
+                raise RuntimeError("压缩包包含非法路径：%s" % name)
+        try:
+            tar.extractall(tmp, filter="data")
+        except TypeError:
+            tar.extractall(tmp)
+    roots = [tmp]
+    roots += [os.path.join(tmp, entry) for entry in sorted(os.listdir(tmp))
+              if os.path.isdir(os.path.join(tmp, entry))]
+    for root in roots:
+        if os.path.isfile(os.path.join(root, "payload", "easytier", "easytier-core")):
+            return tmp, root
+    shutil.rmtree(tmp, ignore_errors=True)
+    raise RuntimeError("组网包缺少 payload/easytier/easytier-core")
+
+
+def run_easytier(action):
+    cmd = [EASYTIER_SERVICE, action]
+    if not os.access(EASYTIER_SERVICE, os.X_OK):
+        cmd = ["/bin/sh"] + cmd
+    try:
+        subprocess.run(cmd, timeout=20,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:
+        log("EasyTier 服务 %s 失败：%s" % (action, exc))
+
+
+def wait_tun(seconds=12):
+    for _ in range(seconds):
+        time.sleep(1)
+        try:
+            proc = subprocess.run(["ip", "-4", "addr", "show", "tun0"],
+                                  capture_output=True, timeout=5)
+        except Exception:
+            return ""
+        match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)",
+                          proc.stdout.decode("utf-8", "replace"))
+        if match:
+            return match.group(1)
+    return ""
+
+
+def update_networking(repo, asset_url, force=False):
+    if not networking_installed():
+        log("未安装 EasyTier，跳过组网更新。")
+        return None
+    version_url, tarball_url = net_urls(repo, asset_url)
+    try:
+        remote = normalize_version(fetch_text(version_url))
+    except Exception as exc:
+        log("组网版本检查失败（跳过）：%s" % str(exc).splitlines()[0])
+        return None
+    local = local_net_version()
+    log("组网版本：本地 %s / 远端 %s" % (local or "unknown", remote or "unknown"))
+    if not remote:
+        log("远端组网版本为空，跳过。")
+        return None
+    if remote == local and not force:
+        log("组网已是最新版本。")
+        return remote
+
+    data, source = download(tarball_url)
+    tmp, root = extract_net_payload(data)
+    try:
+        core = os.path.join(root, "payload", "easytier", "easytier-core")
+        cli = os.path.join(root, "payload", "easytier", "easytier-cli")
+        for old in (EASYTIER_CORE, EASYTIER_CLI):
+            if os.path.isfile(old):
+                try:
+                    shutil.copy2(old, old + ".bak")
+                except OSError:
+                    pass
+        run_easytier("stop")
+        try:
+            install_file(core, EASYTIER_CORE, 0o755)
+            if os.path.isfile(cli):
+                install_file(cli, EASYTIER_CLI, 0o755)
+            pkg_version = os.path.join(root, "VERSION")
+            if os.path.isfile(pkg_version):
+                install_file(pkg_version, EASYTIER_VERSION, 0o644)
+        finally:
+            run_easytier("start")
+        ip = wait_tun()
+        log("组网已更新到 %s（%s）%s"
+            % (remote, source, "，tun0 " + ip if ip else "，暂未拿到 tun0"))
+        return remote
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def report_networking(repo, asset_url):
+    if not networking_installed():
+        log("组网：未安装 EasyTier（跳过）。")
+        return
+    version_url, _ = net_urls(repo, asset_url)
+    try:
+        remote = normalize_version(fetch_text(version_url))
+    except Exception as exc:
+        log("组网：无法获取远端版本（%s）。" % str(exc).splitlines()[0])
+        return
+    local = local_net_version()
+    if remote and remote == local:
+        log("组网已是最新版本（%s）。" % local)
+    else:
+        log("组网可更新：%s -> %s。" % (local or "?", remote or "?"))
+
+
 def install_payload(root):
     pairs = []
     for name in ("lobby_ui.py", "lobby_watch.py", "update.py", "uinput_keys.py"):
@@ -180,6 +340,8 @@ def main():
     ap.add_argument("--repo", default="", help="GitHub owner/repo")
     ap.add_argument("--branch", default="main", help="源码分支（无 release 时使用）")
     ap.add_argument("--asset-url", default="", help="直接指定 tarball URL")
+    ap.add_argument("--no-networking", action="store_true",
+                    help="只更新大厅，跳过 EasyTier 组网")
     args = ap.parse_args()
 
     repo = read_repo(args.repo)
@@ -213,18 +375,31 @@ def main():
         return 1
     if args.check:
         if remote_v == local_v:
-            log("已是最新版本。")
+            log("大厅已是最新版本。")
         else:
-            log("可更新：%s -> %s。执行 lobby-update 安装。" % (local_v or "?", remote_v))
+            log("大厅可更新：%s -> %s。执行 lobby-update 安装。" % (local_v or "?", remote_v))
+        if not args.no_networking:
+            report_networking(repo, args.asset_url)
         shutil.rmtree(tmp, ignore_errors=True)
         return 0
     if remote_v == local_v and not args.force:
-        log("已是最新版本（--force 可强制重装）。")
+        log("大厅已是最新版本（--force 可强制重装）。")
         shutil.rmtree(tmp, ignore_errors=True)
+        if not args.no_networking:
+            try:
+                update_networking(repo, args.asset_url, args.force)
+            except Exception as exc:
+                log("组网更新失败（大厅不受影响）：%s" % exc)
+        log("完成。")
         return 0
 
     install_payload(root)
     shutil.rmtree(tmp, ignore_errors=True)
+    if not args.no_networking:
+        try:
+            update_networking(repo, args.asset_url, args.force)
+        except Exception as exc:
+            log("组网更新失败（大厅不受影响）：%s" % exc)
     log("已更新到 %s，正在重启大厅界面…" % remote_v)
     restart_ui()
     log("完成。")
