@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import datetime, json, math, os, re, socket, subprocess, threading, time, urllib.request
+import datetime, fcntl, json, math, os, re, signal, socket, subprocess, threading, time, urllib.request
 import xml.etree.ElementTree as ET
 import pygame
 
@@ -14,6 +14,9 @@ VERSION_FILE = "/userdata/system/lobby-ui/VERSION"
 PASSWORD_MAX = 16
 PW_MARK_BEGIN = "# lobby-ui netplay password begin"
 PW_MARK_END = "# lobby-ui netplay password end"
+LAUNCH_LOCK = "/tmp/lobby-ui-launch.lock"
+INSTANCE_LOCK = "/tmp/lobby-ui-instance.lock"
+EASYTIER_CLI = "/userdata/system/easytier/easytier-cli"
 
 FONT_CJK = "/usr/share/dosbox-x/SarasaGothicFixed.ttf"
 FONT_FALLBACK = "/usr/share/fonts/dejavu/DejaVuSans.ttf"
@@ -30,7 +33,7 @@ NETPLAY_SYSTEMS = ["fbneo", "mame", "nes", "snes", "megadrive", "gba"]
 SYSTEM_LABEL = {"fbneo": "街机 · FBNeo", "mame": "街机 · MAME", "nes": "FC / NES",
                 "snes": "SFC / SNES", "megadrive": "MD / Genesis", "gba": "GBA"}
 
-state = {"rooms": [], "error": "", "updated": 0.0, "rtt": {}, "lobby_ms": None,
+state = {"rooms": [], "error": "", "updated": 0.0, "rtt": {}, "peers": {}, "lobby_ms": None,
          "systems": [], "systems_ready": False, "notice": None, "host_exit": None}
 lock = threading.Lock()
 refresh_evt = threading.Event()
@@ -77,6 +80,37 @@ def measure_tcp(ip, port, tries=3):
     return best
 
 
+def fetch_peers():
+    """easytier-cli peer -> {ip: {"cost": "p2p"/"relay(N)"/"local", "lat": ms}}"""
+    peers = {}
+    out = None
+    for cmd in (EASYTIER_CLI, "easytier-cli"):
+        try:
+            out = subprocess.check_output([cmd, "peer"], stderr=subprocess.DEVNULL,
+                                          timeout=3)
+            break
+        except FileNotFoundError:
+            continue
+        except Exception:
+            return peers
+    if out is None:
+        return peers
+    out = out.decode("utf-8", "replace")
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 6:
+            continue
+        ip = parts[1].split("/")[0].strip()
+        if not re.match(r"^\d+\.\d+\.\d+\.\d+$", ip):
+            continue
+        try:
+            lat = float(parts[4])
+        except ValueError:
+            lat = None
+        peers[ip] = {"cost": parts[3].lower(), "lat": lat}
+    return peers
+
+
 def fetch_rooms():
     while not stop_evt.is_set():
         rooms, err = [], ""
@@ -87,9 +121,11 @@ def fetch_rooms():
             err = str(exc)
         rooms.sort(key=lambda f: str(f.get("created", "")), reverse=True)
         rtt = {f.get("id"): measure_tcp(f.get("ip"), f.get("port")) for f in rooms}
+        peers = fetch_peers()
         lobby_ms = measure_tcp(LOBBY_HOST, LOBBY_PORT, tries=2)
         with lock:
-            state.update(rooms=rooms, error=err, rtt=rtt, lobby_ms=lobby_ms, updated=time.time())
+            state.update(rooms=rooms, error=err, rtt=rtt, peers=peers, lobby_ms=lobby_ms,
+                         updated=time.time())
         refresh_evt.wait(REFRESH_SEC)
         refresh_evt.clear()
 
@@ -333,12 +369,98 @@ def core_short(system):
     return base
 
 
+def _pids_matching(pred):
+    pids = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % name, "rb") as fh:
+                args = [a for a in fh.read().split(b"\0") if a]
+        except OSError:
+            continue
+        if pred(args):
+            pids.append(int(name))
+    return pids
+
+
+def _ppid(pid):
+    try:
+        with open("/proc/%d/status" % pid, encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return -1
+
+
+def netplay_emulator_pids():
+    """大厅启动的联机会话。UI 运行期间它必然是残留：启动游戏时 UI 是被阻塞的。"""
+    launchers = _pids_matching(
+        lambda args: b"/usr/bin/emulatorlauncher" in args and b"-netplaymode" in args)
+    pids = set(launchers)
+    if launchers:
+        for pid in _pids_matching(lambda args: any(a.endswith(b"/retroarch") for a in args)):
+            if _ppid(pid) in launchers:
+                pids.add(pid)
+    # launcher 已退出、只剩联机 RetroArch 的孤儿
+    for pid in _pids_matching(
+            lambda args: any(a == b"--host" or a.startswith(b"--connect") for a in args)):
+        pids.add(pid)
+    return sorted(pids)
+
+
+def clear_leftover_emulators():
+    pids = netplay_emulator_pids()
+    if not pids:
+        return 0
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 3.0
+    while time.time() < deadline and netplay_emulator_pids():
+        time.sleep(0.1)
+    for pid in netplay_emulator_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    set_notice("已结束 %d 个残留联机进程" % len(pids), 4)
+    return len(pids)
+
+
+def drop_queued_input():
+    # 启动/退出游戏瞬间积压的按键不能再次触发启动
+    try:
+        pygame.event.clear([pygame.KEYDOWN, pygame.KEYUP,
+                            pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP])
+    except Exception:
+        pass
+
+
 def launch_game(system, game, netplay_args):
-    # 走 Batocera 正常启动管线，系统配置（着色器/bezel/分辨率）才会生效
-    activate_window("retroarch", 1.5)
-    subprocess.run(["/usr/bin/emulatorlauncher", "-system", system["name"], "-rom", game["path"],
-                    "-core", core_short(system)] + netplay_args, env=ENV)
-    focus_self(0.3)
+    """启动联机游戏；跨进程加锁，并发调用只有一个能真正启动。"""
+    fd = os.open(LAUNCH_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            set_notice("已有游戏正在启动或运行中", 4)
+            return False
+        drop_queued_input()
+        clear_leftover_emulators()
+        # 走 Batocera 正常启动管线，系统配置（着色器/bezel/分辨率）才会生效
+        activate_window("retroarch", 1.5)
+        subprocess.run(["/usr/bin/emulatorlauncher", "-system", system["name"], "-rom", game["path"],
+                        "-core", core_short(system)] + netplay_args, env=ENV)
+        focus_self(0.3)
+        drop_queued_input()
+        return True
+    finally:
+        os.close(fd)
 
 
 def pergame_cfg_path(system, game):
@@ -387,21 +509,24 @@ def start_host(game, system, password=""):
     set_notice("正在建立主机：%s%s" % (label, " · 有密码" if password else ""), 6)
     with lock:
         state["host_exit"] = None
+    started = False
     try:
         write_netplay_password(system, game, password)
     except Exception as exc:
         password = ""
         set_notice("写入房间密码失败，按无密码开房：%s" % exc, 6)
     try:
-        launch_game(system, game, ["-netplaymode", "host", "-netplayport", str(NETPLAY_PORT)])
+        started = launch_game(system, game,
+                              ["-netplaymode", "host", "-netplayport", str(NETPLAY_PORT)])
     finally:
         try:
             write_netplay_password(system, game, "")
         except Exception:
             pass
-        with lock:
-            state["host_exit"] = {"game": game["name"].lower(), "at": time.time()}
-        set_notice("游戏已退出，房间公告约 %d 秒后从大厅消失" % int(ROOM_TTL), 6)
+        if started:
+            with lock:
+                state["host_exit"] = {"game": game["name"].lower(), "at": time.time()}
+            set_notice("游戏已退出，房间公告约 %d 秒后从大厅消失" % int(ROOM_TTL), 6)
 
 
 def find_local_game(game_name):
@@ -707,7 +832,7 @@ def draw_password(screen, w, h, header_h, footer_h, text, row, col, nav, system,
     draw_footer(screen, w, h, footer_h, f_foot, hint, ip)
 
 
-def draw_rooms(screen, w, h, header_h, footer_h, sel, rooms, err, rtt, f_title, f_sub, f_game, f_info, f_small, f_foot, lobby_ms, ip):
+def draw_rooms(screen, w, h, header_h, footer_h, sel, rooms, err, rtt, peers, f_title, f_sub, f_game, f_info, f_small, f_foot, lobby_ms, ip):
     draw_header(screen, w, "联机进入", "在线房间 · 主机退出后房间约 60 秒自动消失",
                 f_title, f_sub, f_small, len(rooms), lobby_ms)
     area_y0, area_y1 = header_h, h - footer_h
@@ -773,14 +898,32 @@ def draw_rooms(screen, w, h, header_h, footer_h, sel, rooms, err, rtt, f_title, 
         st = "可连接" if ok else "不可达"
         screen.blit(f_small.render(st, True, border), (tx + 20, dot_y))
         ms = rtt.get(room.get("id"))
-        ms_txt = "测速 -" if ms is None else "测速 %.1f ms" % ms
-        ms_color = GREEN if (ms is not None and ms < 30) else MUTED
+        peer = peers.get(str(room.get("ip") or ""))
+        cost = peer["cost"] if peer else ""
+        if cost == "p2p":
+            label, lat, ms_color = "直连", peer["lat"], GREEN
+        elif cost.startswith("relay"):
+            label, lat, ms_color = "中继", peer["lat"], AMBER
+        elif cost == "local":
+            label, lat, ms_color = "本机", None, ACCENT
+        else:
+            label, lat, ms_color = "测速", ms, GREEN if (ms is not None and ms < 30) else MUTED
+        ms_txt = label if lat is None else "%s %.1f ms" % (label, lat)
         screen.blit(f_small.render(ms_txt, True, ms_color),
                     (x + card_w - 22 - f_small.size(ms_txt)[0], dot_y))
     draw_footer(screen, w, h, footer_h, f_foot, "方向键选择    Enter / A 加入    R 刷新    ESC 返回", ip)
 
 
 def main():
+    # 单实例：ES 磁贴与 lobby_watch 可能同时拉起 UI，第二个直接退出
+    instance_fd = os.open(INSTANCE_LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(instance_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(instance_fd)
+        return
+    os.ftruncate(instance_fd, 0)
+    os.write(instance_fd, str(os.getpid()).encode())
     pygame.init()
     info = pygame.display.Info()
     w, h = info.current_w or 1920, info.current_h or 1080
@@ -815,6 +958,7 @@ def main():
             rooms = list(state["rooms"])
             err = state["error"]
             rtt = dict(state["rtt"])
+            peers = dict(state["peers"])
             lobby_ms = state["lobby_ms"]
             systems = list(state["systems"])
             ready = state["systems_ready"]
@@ -960,8 +1104,8 @@ def main():
         elif page == "rooms":
             if sel_room >= len(rooms):
                 sel_room = 0
-            draw_rooms(screen, w, h, header_h, footer_h, sel_room, rooms, err, rtt, f_title, f_sub,
-                       f_game, f_info, f_small, f_foot, lobby_ms, local_ip())
+            draw_rooms(screen, w, h, header_h, footer_h, sel_room, rooms, err, rtt, peers, f_title,
+                       f_sub, f_game, f_info, f_small, f_foot, lobby_ms, local_ip())
         draw_notice(screen, w, h, footer_h, f_info)
         pygame.display.flip()
         clock.tick(20)

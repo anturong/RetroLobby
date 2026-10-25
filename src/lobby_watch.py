@@ -139,10 +139,13 @@ def busy():
 
 def open_ui():
     log("match; opening lobby ui")
+    started = time.time()
     with open(UI_LOG, "ab") as fh:
         proc = subprocess.Popen(["/usr/bin/python3", UI], env=ENV, stdout=fh, stderr=fh)
         code = proc.wait()
-    log("lobby ui exited (%s)" % code)
+    lived = time.time() - started
+    log("lobby ui exited (%s) after %.1fs" % (code, lived))
+    return lived
 
 
 def es_window():
@@ -222,7 +225,11 @@ def main():
                     while ui_running():
                         time.sleep(0.5)
                 else:
-                    open_ui()
+                    lived = open_ui()
+                    # 单实例锁让重复 UI 立刻退出；此时别再给 ES 发 ESC
+                    if lived < 2.0 and ui_running():
+                        log("another ui instance is running; skip ESC")
+                        continue
                 back_to_home(size, ref)
         except Exception as exc:
             log("watch error: %r" % (exc,))

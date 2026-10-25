@@ -18,6 +18,6 @@ setsid $DIR/easytier-core @@IPMODE@@ \
   --hostname @@HOSTNAME@@ \
   --network-name @@NET_NAME@@ \
   --network-secret @@NET_SECRET@@ \
-  -p tcp://easytier-us.slarker.me:11010 \
-  -p tcp://web.sitmc.club:11010 >>$LOG 2>&1 </dev/null &
+  -p tcp://225284.xyz:11010 \
+  -p udp://et.basd1.de:11010 >>$LOG 2>&1 </dev/null &
 exit 0
