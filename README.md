@@ -18,6 +18,24 @@ passwd                    # 设置强密码
 
 改完后 `deploy.py` 用 `--password <新密码>`（或改用 SSH 密钥）部署，不要继续使用默认值。
 
+## 界面预览
+
+以下截图取自 Batocera 43.1 验证机（1920×1080），进入 ES 的“联机大厅”磁贴后即为全屏 UI：
+
+![联机大厅入口：建立主机 / 联机进入](docs/screenshots/lobby-main.png)
+
+选择游戏时直接读取 Batocera 中文名与本地封面：
+
+![游戏选择：中文名与封面](docs/screenshots/lobby-games.png)
+
+建立主机时可留空（无密码），也可用方向键在屏幕上输入房间密码：
+
+![建立主机：房间密码](docs/screenshots/lobby-password.png)
+
+联机进入：列出在线房间，标注“有密码 / 可连接 / 测速 / 本机已开启”：
+
+![联机进入：在线房间列表](docs/screenshots/lobby-join.png)
+
 ## 交付内容
 
 | 路径 | 作用 | 部署位置 |
