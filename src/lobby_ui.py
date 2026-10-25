@@ -901,7 +901,7 @@ def draw_rooms(screen, w, h, header_h, footer_h, sel, rooms, err, rtt, peers, f_
         peer = peers.get(str(room.get("ip") or ""))
         cost = peer["cost"] if peer else ""
         if cost == "p2p":
-            label, lat, ms_color = "直连", peer["lat"], GREEN
+            label, lat, ms_color = "P2P", peer["lat"], GREEN
         elif cost.startswith("relay"):
             label, lat, ms_color = "中继", peer["lat"], AMBER
         elif cost == "local":
@@ -911,7 +911,8 @@ def draw_rooms(screen, w, h, header_h, footer_h, sel, rooms, err, rtt, peers, f_
         ms_txt = label if lat is None else "%s %.1f ms" % (label, lat)
         screen.blit(f_small.render(ms_txt, True, ms_color),
                     (x + card_w - 22 - f_small.size(ms_txt)[0], dot_y))
-    draw_footer(screen, w, h, footer_h, f_foot, "方向键选择    Enter / A 加入    R 刷新    ESC 返回", ip)
+    draw_footer(screen, w, h, footer_h, f_foot,
+                "方向键选择    Enter / A 加入    R 刷新    P2P=直连  中继=中转    ESC 返回", ip)
 
 
 def main():
