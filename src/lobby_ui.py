@@ -324,22 +324,48 @@ def set_notice(text, secs=3.5):
         state["notice"] = {"text": text, "until": time.time() + secs}
 
 
+def _active_window_ids():
+    try:
+        out = subprocess.run(["xdotool", "getactivewindow"],
+                             capture_output=True, env=ENV, timeout=2)
+        return out.stdout.split()
+    except Exception:
+        return []
+
+
 def focus_self(delay=0.0):
     def run():
         if delay:
             time.sleep(delay)
-        for _ in range(20):
+        wid = None
+        for _ in range(40):
             try:
                 out = subprocess.run(["xdotool", "search", "--pid", str(os.getpid())],
                                      capture_output=True, env=ENV, timeout=2)
                 ids = out.stdout.split()
                 if ids:
-                    subprocess.run(["xdotool", "windowactivate", "--sync", ids[0].decode()],
-                                   env=ENV, timeout=3)
-                    return
+                    wid = ids[0]
+                    break
             except Exception:
                 pass
             time.sleep(0.25)
+        if not wid:
+            return
+        # EmulationStation 可能在 UI 之后才启动并把焦点抢回去，所以首次激活后
+        # 在 +1.5s / +4.5s / +9.5s 复查；只有自己不在前台时才重新激活，
+        # 已经在前台就什么都不做，避免和用户抢窗口。
+        for wait in (0.0, 1.5, 3.0, 5.0):
+            if wait:
+                time.sleep(wait)
+            if _active_window_ids()[:1] == [wid]:
+                continue
+            try:
+                subprocess.run(["xdotool", "windowactivate", "--sync", wid.decode()],
+                               env=ENV, timeout=3)
+                subprocess.run(["xdotool", "windowraise", wid.decode()],
+                               env=ENV, timeout=3)
+            except Exception:
+                pass
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -944,7 +970,7 @@ def main():
     f_foot = pygame.font.Font(FONT_PATH, 21)
     threading.Thread(target=fetch_rooms, daemon=True).start()
     threading.Thread(target=scanner, daemon=True).start()
-    focus_self(0.6)
+    focus_self(0.3)
     header_h, footer_h = 150, 78
     page = "main"
     sel_main = 0
